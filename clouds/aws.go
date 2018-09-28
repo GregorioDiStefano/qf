@@ -2,6 +2,7 @@ package clouds
 
 import (
 	"io"
+	"os"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -15,7 +16,15 @@ type AWSStorage struct {
 	s3     *s3.S3
 }
 
-func NewAWSStorage(bucket string) *AWSStorage {
+func setupAWS(awsKey, awsSecret, awsRegion string) {
+	os.Setenv("AWS_ACCESS_KEY_ID", awsKey)
+	os.Setenv("AWS_SECRET_ACCESS_KEY", awsSecret)
+	os.Setenv("AWS_REGION", awsRegion)
+}
+
+func NewAWSStorage(bucket, awsKey, awsSecret, awsRegion string) *AWSStorage {
+
+	setupAWS(awsKey, awsSecret, awsRegion)
 	creds := credentials.NewEnvCredentials()
 	sess, err := session.NewSession(&aws.Config{Credentials: creds})
 
@@ -36,6 +45,22 @@ func (awsS3 *AWSStorage) ListObjects() ([]string, error) {
 
 	for _, obj := range result.Contents {
 		objects = append(objects, obj.GoString())
+	}
+
+	return objects, err
+}
+
+func (awsS3 *AWSStorage) ListObjectsWithPrefix(prefix string) ([]string, error) {
+	input := &s3.ListObjectsInput{}
+	input.SetPrefix(prefix)
+	input.SetBucket(awsS3.bucket)
+
+	objects := []string{}
+
+	result, err := awsS3.s3.ListObjects(input)
+
+	for _, obj := range result.Contents {
+		objects = append(objects, *obj.Key)
 	}
 
 	return objects, err

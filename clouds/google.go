@@ -2,11 +2,20 @@ package clouds
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
+	"io/ioutil"
 	"log"
+	"os"
+	"os/user"
+	"path/filepath"
 
 	"cloud.google.com/go/storage"
 	// Imports the Google Cloud Storage client package.
+)
+
+const (
+	GOOGLE_CREDS_FILENAME = "creds.json"
 )
 
 type GoogleStorage struct {
@@ -14,8 +23,34 @@ type GoogleStorage struct {
 	client *storage.Client
 }
 
-func NewGoogleStorage(bucket string) *GoogleStorage {
+func setupGoogle(googleCreds string) {
+	//make sure cred file is there
+	data, err := base64.StdEncoding.DecodeString(googleCreds)
+
+	if err != nil {
+		panic("failed to read base64'ed google credentials: " + err.Error())
+	}
+
+	usr, err := user.Current()
+
+	// abort if we can get a user's home directory
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	credsLocations := filepath.Join(usr.HomeDir, GOOGLE_CREDS_FILENAME)
+
+	if err := ioutil.WriteFile(credsLocations, []byte(data), 0600); err != nil {
+		panic("failed to write google credential file: " + err.Error())
+	}
+
+	os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credsLocations)
+}
+
+func NewGoogleStorage(bucket, googleCreds string) *GoogleStorage {
 	ctx := context.Background()
+	setupGoogle(googleCreds)
+
 	client, err := storage.NewClient(ctx)
 
 	if err != nil {
@@ -30,6 +65,25 @@ func (gs *GoogleStorage) ListObjects() ([]string, error) {
 	objs := []string{}
 
 	next := gs.client.Bucket(gs.bucket).Objects(ctx, &storage.Query{})
+
+	for {
+		obj, err := next.Next()
+		if obj != nil && err == nil {
+			objs = append(objs, obj.Name)
+		} else {
+			break
+		}
+	}
+
+	return objs, nil
+}
+
+func (gs *GoogleStorage) ListObjectsWithPrefix(prefix string) ([]string, error) {
+	ctx := context.Background()
+	objs := []string{}
+
+	q := storage.Query{Prefix: prefix}
+	next := gs.client.Bucket(gs.bucket).Objects(ctx, &q)
 
 	for {
 		obj, err := next.Next()

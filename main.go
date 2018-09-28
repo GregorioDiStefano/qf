@@ -3,10 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"encoding/base64"
+	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
+	"log"
 	"math/rand"
 	"os"
 	"time"
@@ -21,13 +21,15 @@ var googleCreds string
 var awsKey, awsSecret, awsRegion string
 
 const (
-	chunk     = 3 * 1024 * 1024
-	objkey    = 2
-	cryptokey = 8
+	firstChunkSize  = 1 * 1024 * 1024
+	chunkSize       = 5 * 1024 * 1024
+	objKeyLength    = 2
+	cryptoKeyLength = 10
+	objKeyPrefix    = "_qf_ft_"
 )
 
 func randomCode(l int) string {
-	possible := "23456789abcdefghjkmnpqrstuvwxyz"
+	possible := "123456789abcdefghjkmnpqrstuvwxyzABCDEFGHIJKLMNPQRSTUVWXYV"
 	str := ""
 
 	rand.Seed(time.Now().UnixNano())
@@ -40,9 +42,13 @@ func randomCode(l int) string {
 	return str
 }
 
+func storageObjectName(objKey string, count, endOfFile int) string {
+	return fmt.Sprintf("%s_%s_%d_%d", objKeyPrefix, objKey, count, endOfFile)
+}
+
 func sendfile(gs clouds.Cloud) {
-	obj := randomCode(objkey)
-	key := randomCode(cryptokey)
+	obj := randomCode(objKeyLength)
+	key := randomCode(cryptoKeyLength)
 
 	fmt.Printf("ID: %s\n", obj+key)
 
@@ -52,9 +58,14 @@ func sendfile(gs clouds.Cloud) {
 
 	r := bufio.NewReader(os.Stdin)
 	data := make([]byte, 1<<20)
+	bufferSize := chunkSize
 
 	for {
 		n, err := r.Read(data)
+
+		if count == 1 {
+			bufferSize = firstChunkSize
+		}
 
 		if err == io.EOF {
 			endOfFile = 1
@@ -62,11 +73,10 @@ func sendfile(gs clouds.Cloud) {
 			payload = append(payload, data[0:n]...)
 		}
 
-		if endOfFile != 1 && len(payload) < chunk {
+		if endOfFile != 1 && len(payload) < bufferSize {
 			continue
 		}
 
-		fn := fmt.Sprintf("%s_%d_%d", obj, count, endOfFile)
 		reader, writer := io.Pipe()
 
 		go func() {
@@ -77,11 +87,15 @@ func sendfile(gs clouds.Cloud) {
 		buf := new(bytes.Buffer)
 		buf.ReadFrom(reader)
 
-		var buf2 []byte
-		writer2 := bytes.NewBuffer(buf2)
+		var uploadBuffer []byte
+		uploadWriter := bytes.NewBuffer(uploadBuffer)
 
-		crypto.EncryptFile(buf, writer2, []byte(key))
-		gs.Upload(fn, writer2)
+		crypto.EncryptFile(buf, uploadWriter, []byte(key))
+
+		fn := storageObjectName(obj, count, endOfFile)
+		if err := gs.Upload(fn, uploadWriter); err != nil {
+			panic(err)
+		}
 
 		payload = []byte{}
 		count++
@@ -92,11 +106,11 @@ func sendfile(gs clouds.Cloud) {
 	}
 }
 
-func recvfile(obj string, gs clouds.Cloud) {
-	id := obj[0:objkey]
-	key := obj[objkey:]
+func recvfile(obj string, cloud clouds.Cloud, keep bool) {
+	id := obj[0:objKeyLength]
+	key := obj[objKeyLength:]
 
-	next := 1
+	count := 1
 	fails := 0
 
 	for {
@@ -108,14 +122,14 @@ func recvfile(obj string, gs clouds.Cloud) {
 			panic("failed to find file part")
 		}
 
-		obj = fmt.Sprintf("%s_%d_%d", id, next, endOfFile)
-		r, err := gs.Download(obj)
+		obj := storageObjectName(id, count, endOfFile)
+		r, err := cloud.Download(obj)
 
 		if err != nil {
 			fails++
 
 			if fails > 1 {
-				time.Sleep(time.Second * 2 * time.Duration(fails))
+				time.Sleep(time.Second * 3 * time.Duration(fails))
 			}
 
 			continue
@@ -123,49 +137,82 @@ func recvfile(obj string, gs clouds.Cloud) {
 
 		fails = 0
 		crypto.DecryptFile(r, os.Stdout, []byte(key))
-		gs.Remove(obj)
+
+		if !keep {
+			cloud.Remove(obj)
+		}
 
 		if endOfFile == 1 {
 			os.Exit(0)
 		}
 
-		next++
+		count++
 	}
+}
+
+func removeAll(cloud clouds.Cloud) error {
+	var err error
+	var files []string
+
+	if files, err = cloud.ListObjectsWithPrefix(objKeyPrefix); err != nil {
+		return err
+	}
+
+	var count int
+	for _, obj := range files {
+		if err = cloud.Remove(obj); err != nil {
+			return err
+		} else {
+			count += 1
+		}
+	}
+
+	log.Printf("%d objects removed from bucket.", count)
+
+	return nil
+}
+
+func parseCmdline() (help, keep, deleteAll bool) {
+	flag.BoolVar(&help, "h", false, "print help screen")
+	flag.BoolVar(&keep, "k", false, "don't remove files after they are downloaded")
+	flag.BoolVar(&deleteAll, "d", false, "delete all stored files and quit")
+	flag.Parse()
+
+	return
+}
+
+func printHelp() {
+	flag.PrintDefaults()
 }
 
 func main() {
 	var cloud clouds.Cloud
-
-	if googleCreds != "" {
-		data, err := base64.StdEncoding.DecodeString(googleCreds)
-
-		if err != nil {
-			panic("failed to read base64'ed google credentials: " + err.Error())
-		}
-
-		ioutil.WriteFile("creds.json", []byte(data), 0400)
-		os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "./creds.json")
-		cloud = clouds.NewGoogleStorage(bucket)
-
-	} else if awsKey != "" {
-
-		os.Setenv("AWS_ACCESS_KEY_ID", awsKey)
-		os.Setenv("AWS_SECRET_ACCESS_KEY", awsSecret)
-		os.Setenv("AWS_REGION", awsRegion)
-
-		cloud = clouds.NewAWSStorage(bucket)
-	}
+	help, keep, deleteAll := parseCmdline()
 
 	stat, _ := os.Stdin.Stat()
 
+	if (stat.Mode()&os.ModeCharDevice != 0) && (len(os.Args) == 1 || help) {
+		flag.Usage()
+		fmt.Println("\n You need to pipe data into qf (cat file | qf) to upload a file or pass an ID as single argument to retrieve a file")
+		os.Exit(1)
+	}
+
+	if googleCreds != "" {
+		cloud = clouds.NewGoogleStorage(bucket, googleCreds)
+	} else if awsKey != "" {
+		cloud = clouds.NewAWSStorage(bucket, awsKey, awsSecret, awsRegion)
+	} else {
+		panic("Amazon Web Service/Google cloud credentials not built into binary! Rebuild.")
+	}
+
 	if (stat.Mode() & os.ModeCharDevice) == 0 {
 		sendfile(cloud)
-	} else {
-		if len(os.Args) == 0 || len(os.Args) > 2 {
-			fmt.Println("either pipe file into command, or pass ID as single argument to retrieve file")
-		} else {
-			obj := os.Args[1]
-			recvfile(obj, cloud)
+	} else if deleteAll {
+		if err := removeAll(cloud); err != nil {
+			panic(err)
 		}
+	} else {
+		obj := os.Args[len(os.Args)-1]
+		recvfile(obj, cloud, keep)
 	}
 }
