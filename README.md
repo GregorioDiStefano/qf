@@ -4,7 +4,7 @@ A simple data transfer tool which uses AWS/GCP object storage as a backend. No n
 
 - [x] Transparent encryption/decryption (PGP & SSL)
 - [x] Transparent compression (GZIP)
-- [X] Streaming transfer
+- [X] Streaming transfer (start downloading before upload completed)
 - [X] No SSH tunnels, firewall traversal
 
 ### Basic usage:
@@ -18,6 +18,11 @@ To download, just pass the unique as a single argument and either print to stdou
 
 `qf someID > file`
 
+### Build
+
+In order to use this tool with your own AWS or GCP account, you need to build the tool using the the `build.sh` script.
+
+The script will build the `qf` binary with your AWS/GCP credentials embedded, making the tool fully independant."
 
 ### Demo
 
