@@ -15,16 +15,18 @@ import (
 	"github.com/GregorioDiStefano/qf/crypto"
 )
 
-var bucket string
+var (
+	googleCreds                  string
+	awsKey, awsSecret, awsRegion string
 
-var googleCreds string
-var awsKey, awsSecret, awsRegion string
+	cloudBucketName string
+)
 
 const (
 	firstChunkSize  = 1 * 1024 * 1024
 	chunkSize       = 5 * 1024 * 1024
-	objKeyLength    = 2
-	cryptoKeyLength = 10
+	objKeyLength    = 3
+	cryptoKeyLength = 12
 	objKeyPrefix    = "_qf_ft_"
 )
 
@@ -46,7 +48,7 @@ func storageObjectName(objKey string, count, endOfFile int) string {
 	return fmt.Sprintf("%s_%s_%d_%d", objKeyPrefix, objKey, count, endOfFile)
 }
 
-func sendfile(gs clouds.Cloud) {
+func sendFile(cloud clouds.Cloud) {
 	obj := randomCode(objKeyLength)
 	key := randomCode(cryptoKeyLength)
 
@@ -93,8 +95,8 @@ func sendfile(gs clouds.Cloud) {
 		crypto.EncryptFile(buf, uploadWriter, []byte(key))
 
 		fn := storageObjectName(obj, count, endOfFile)
-		if err := gs.Upload(fn, uploadWriter); err != nil {
-			panic(err)
+		if err := cloud.Upload(fn, uploadWriter); err != nil {
+			log.Fatal("failed to upload: " + err.Error())
 		}
 
 		payload = []byte{}
@@ -106,7 +108,7 @@ func sendfile(gs clouds.Cloud) {
 	}
 }
 
-func recvfile(obj string, cloud clouds.Cloud, keep bool) {
+func recieveFile(obj string, cloud clouds.Cloud, keep bool) {
 	id := obj[0:objKeyLength]
 	key := obj[objKeyLength:]
 
@@ -162,9 +164,8 @@ func removeAll(cloud clouds.Cloud) error {
 	for _, obj := range files {
 		if err = cloud.Remove(obj); err != nil {
 			return err
-		} else {
-			count += 1
 		}
+		count++
 	}
 
 	log.Printf("%d objects removed from bucket.", count)
@@ -185,10 +186,21 @@ func printHelp() {
 	flag.PrintDefaults()
 }
 
-func main() {
+func initCloud() *clouds.Cloud {
 	var cloud clouds.Cloud
-	help, keep, deleteAll := parseCmdline()
 
+	if googleCreds != "" {
+		cloud = clouds.NewGoogleStorage(cloudBucketName, googleCreds)
+	} else if awsKey != "" {
+		cloud = clouds.NewAWSStorage(cloudBucketName, awsKey, awsSecret, awsRegion)
+	} else {
+		panic("Amazon Web Service/Google cloud credentials not built into binary! Rebuild.")
+	}
+	return &cloud
+}
+
+func main() {
+	help, keep, deleteAll := parseCmdline()
 	stat, _ := os.Stdin.Stat()
 
 	if (stat.Mode()&os.ModeCharDevice != 0) && (len(os.Args) == 1 || help) {
@@ -197,22 +209,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	if googleCreds != "" {
-		cloud = clouds.NewGoogleStorage(bucket, googleCreds)
-	} else if awsKey != "" {
-		cloud = clouds.NewAWSStorage(bucket, awsKey, awsSecret, awsRegion)
-	} else {
-		panic("Amazon Web Service/Google cloud credentials not built into binary! Rebuild.")
-	}
+	cloud := initCloud()
 
 	if (stat.Mode() & os.ModeCharDevice) == 0 {
-		sendfile(cloud)
+		sendFile(*cloud)
 	} else if deleteAll {
-		if err := removeAll(cloud); err != nil {
-			panic(err)
+		if err := removeAll(*cloud); err != nil {
+			log.Fatalln("failed to remove objects: " + err.Error())
 		}
 	} else {
 		obj := os.Args[len(os.Args)-1]
-		recvfile(obj, cloud, keep)
+		recieveFile(obj, *cloud, keep)
 	}
 }

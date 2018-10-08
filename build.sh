@@ -12,7 +12,7 @@ function build_aws {
     echo "Building ./qf"
 
     go build -ldflags \
-        "-X main.awsRegion=$1 -X main.bucket=$2 -X main.awsKey=$3 -X main.awsSecret=$4" \
+        "-X main.awsRegion=$1 -X main.cloudBucketName=$2 -X main.awsKey=$3 -X main.awsSecret=$4" \
         -o qf
 
     echo "Build successful!"
@@ -22,7 +22,7 @@ function build_gc {
     echo "Building ./qf"
 
     go build -ldflags \
-        "-X main.googleCreds=$(base64 -w0 "$2") -X main.bucket=$1" \
+        "-X main.googleCreds=$(base64 -w0 "$2") -X main.cloudBucketName=$1" \
         -o qf
 
     echo "Build successful!"
